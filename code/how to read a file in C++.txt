@@ -1,0 +1,318 @@
+How to read in a file in C++
+Posted by insane coder at Tuesday, November 22, 2011
+
+So here's a simple question, what is the correct way to read in a file completely in C++?
+
+Various people have various solutions, those who use the C API, C++ API, or some variation of tricks with iterators and algorithms. Wondering which method is the fastest, I thought I might as well put the various options to the test, and the results were surprising.
+
+First, let me propose an API that we'll be using for the function. We'll send a function a C string (char *) of a filename, and we'll get back a C++ string (std::string) of the file contents. If the file cannot be opened, we'll throw an error why that is so. Of course you're welcome to change these functions to receive and return whatever format you prefer, but this is the prototype we'll be operating on:
+std::string get_file_contents(const char *filename);
+
+Our first technique to consider is using the C API to read directly into a string. We'll open a file using fopen(), calculate the file size by seeking to the end, and then size a string appropriately. We'll read the contents into the string, and then return it.
+#include <string>
+#include <cstdio>
+#include <cerrno>
+
+std::string get_file_contents(const char *filename)
+{
+  std::FILE *fp = std::fopen(filename, "rb");
+  if (fp)
+  {
+    std::string contents;
+    std::fseek(fp, 0, SEEK_END);
+    contents.resize(std::ftell(fp));
+    std::rewind(fp);
+    std::fread(&contents[0], 1, contents.size(), fp);
+    std::fclose(fp);
+    return(contents);
+  }
+  throw(errno);
+}
+
+I'm dubbing this technique "method C". This is more or less the technique of any proficient C++ programmer who prefers C style I/O would look like.
+
+The next technique we'll review is basically the same idea, but using C++ streams instead.
+#include <fstream>
+#include <string>
+#include <cerrno>
+
+std::string get_file_contents(const char *filename)
+{
+  std::ifstream in(filename, std::ios::in | std::ios::binary);
+  if (in)
+  {
+    std::string contents;
+    in.seekg(0, std::ios::end);
+    contents.resize(in.tellg());
+    in.seekg(0, std::ios::beg);
+    in.read(&contents[0], contents.size());
+    in.close();
+    return(contents);
+  }
+  throw(errno);
+}
+
+I'm dubbing this technique "method C++". Again, more or less a straight forward C++ implementation based on the same principals as before.
+
+The next technique people consider is using istreambuf_iterator. This iterator is designed for really fast iteration out of stream buffers (files) in C++.
+#include <fstream>
+#include <streambuf>
+#include <string>
+#include <cerrno>
+
+std::string get_file_contents(const char *filename)
+{
+  std::ifstream in(filename, std::ios::in | std::ios::binary);
+  if (in)
+  {
+    return(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+  }
+  throw(errno);
+}
+
+This method is liked by many because of how little code is needed to implement it, and you can read a file directly into all sorts of containers, not just strings. The method was also popularized by the Effective STL book. I'm dubbing the technique "method iterator".
+
+Now some have looked at the last technique, and felt it could be optimized further, since if the string has an idea in advance how big it needs to be, it will reallocate less. So the idea is to reserve the size of the string, then pull the data in.
+#include <fstream>
+#include <streambuf>
+#include <string>
+#include <cerrno>
+
+std::string get_file_contents(const char *filename)
+{
+  std::ifstream in(filename, std::ios::in | std::ios::binary);
+  if (in)
+  {
+    std::string contents;
+    in.seekg(0, std::ios::end);
+    contents.reserve(in.tellg());
+    in.seekg(0, std::ios::beg);
+    contents.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    return(contents);
+  }
+  throw(errno);
+}
+
+I will call this technique "method assign", since it uses the string's assign function.
+
+Some have questioned the previous function, as assign() in some implementations may very well replace the internal buffer, and therefore not benefit from reserving. Better to call push_back() instead, which will keep the existing buffer if no reallocation is needed.
+#include <fstream>
+#include <streambuf>
+#include <string>
+#include <algorithm>
+#include <iterator>
+#include <cerrno>
+
+std::string get_file_contents(const char *filename)
+{
+  std::ifstream in(filename, std::ios::in | std::ios::binary);
+  if (in)
+  {
+    std::string contents;
+    in.seekg(0, std::ios::end);
+    contents.reserve(in.tellg());
+    in.seekg(0, std::ios::beg);
+    std::copy((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>(), std::back_inserter(contents));
+    in.close();
+    return(contents);
+  }
+  throw(errno);
+}
+
+Combining std::copy() and std::back_inserter(), we can achieve our goal. I'm labeling this technique "method copy".
+
+Lastly, some want to try another approach entirely. C++ streams have some very fast copying to another stream via operator<< on their internal buffers. Therefore, we can copy directly into a string stream, and then return the string that string stream uses.
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <cerrno>
+
+std::string get_file_contents(const char *filename)
+{
+  std::ifstream in(filename, std::ios::in | std::ios::binary);
+  if (in)
+  {
+    std::ostringstream contents;
+    contents << in.rdbuf();
+    in.close();
+    return(contents.str());
+  }
+  throw(errno);
+}
+
+We'll call this technique "method rdbuf".
+
+
+Now which is the fastest method to use if all you actually want to do is read the file into a string and return it? The exact speeds in relation to each other may vary from one implementation to another, but the overall margins between the various techniques should be similar.
+
+I conducted my tests with libstdc++ and GCC 4.6, what you see may vary from this.
+
+I tested with multiple megabyte files, reading in one after another, and repeated the tests a dozen times and averaged the results.
+
+
+Method	Duration
+C	24.5
+C++	24.5
+Iterator	64.5
+Assign	68
+Copy	62.5
+Rdbuf	32.5
+
+
+Ordered by speed:
+
+
+Method	Duration
+C/C++	24.5
+Rdbuf	32.5
+Copy	62.5
+Iterator	64.5
+Assign	68
+
+
+These results are rather interesting. There was no speed difference at all whether using the C or C++ API for reading a file. This should be obvious to us all, but yet many people strangely think that the C API has less overhead. The straight forward vanilla methods were also faster than anything involving iterators.
+
+C++ stream to stream copying is really fast. It probably only took a bit longer than the vanilla method due to some reallocations needed. If you're doing disk file to disk file though, you probably want to consider this option, and go directly from in stream to out stream.
+
+Using the istreambuf_iterator methods while popular and concise are actually rather slow. Sure they're faster than istream_iterators (with skipping turned off), but they can't compete with more direct methods.
+
+A C++ string's internal assign() function, at least in libstdc++, seems to throw away the existing buffer (at the time of this writing), so reserving then assigning is rather useless. On the other hand, reading directly into a string, or a different container for that matter, isn't necessarily your most optimal solution where iterators are concerned. Using the external std::copy() function, along with back inserting after reservation is faster than straight up initialization. You might want to consider this method for inserting into some other containers. In fact, I found that std::copy() of istreambuf_iterators with back inserter into an std::deque to be faster than straight up initialization (81 vs 88.5), despite a Deque not being able to reserve room in advance (nor does such make sense with a Deque).
+
+I also found this to be a cute way to get a file into a container backwards, despite a Deque being rather useless for working with file contents.
+std::deque<char> contents;
+std::copy((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>(), std::front_inserter(contents));
+
+Now go out there and speed up your applications!
+
+If there's any demand, I'll see about performing these tests with other C++ implementations.
+
+
+The conclusion was that the straight forward method was the ideal method, this was verified across several compilers. Since then, people asked me a number of questions.
+
+What if I want to use a vector instead of a string, are the speeds different?
+Forget C++ containers, what about directly into a manually allocated buffer?
+What about copying into a buffer via mmap?
+What do these various cases say about compilers or their libraries? Can this indicate what they're good or bad at compiling?
+
+So to establish some baseline numbers, I created an application which reads the same files the same amount of times using the fastest method possible. It directly creates a buffer aligned to the partition's blocking factor, informs the OS to do the fastest possible sequential read, and then reads the file directly into the buffer. I also tested the suggested method to mmap a file, and copy the contents from there to an allocated buffer. The times achieved for these were 5 and 9 respectively. The latter is slower because of the extra memcpy() required, you want to read directly into your destination buffer whenever possible. The fastest time I now achieved should more or less be the fastest theoretical limit I'm able to get with my hardware. Both GCC and LLVM got the exact same times. I did not test with VC++ here as it doesn't support POSIX 2008.
+
+Now regarding our 6 methods from last time, all of them except the Rdbuf method are possible with std::vector, since there is no std::vector based std::istream.
+
+An interesting thing to note is that C++ string implementations vary greatly from implementation to implementation. Some offer optimizations for very small strings, some offer optimizations for frequent copies, by using reference counting. Some always ensure the string ends with a 0 byte so you can immediately pass them as a C string. In this latter case, operations which operate on strings as a range are rather quick, as the data is copied, then a 0 is appended. Whereas a loop which constantly pushes bytes on the back will have to needlessly set the extra trailing byte to 0 each time. Vector implementations on the other hand don't need to worry about a trailing 0 byte, and generally don't try to internally use all kinds of elaborate storage methods. So if std::vector works for you, you may want to use that.
+
+Let's review times for the 5 applicable methods with our various compilers.
+
+GCC 4.6 with a vector:
+Method	Duration
+C	23.5
+C++	22.8
+Iterator	73
+Assign	81.8
+Copy	68
+
+
+Whereas with a string:
+Method	Duration
+C	24.5
+C++	24.5
+Iterator	64.5
+Assign	68
+Copy	63
+
+
+We see that with a vector, the basic methods became a bit faster, but interestingly enough, the others got slower. However, which methods are superior to the others have remained the same.
+
+Now for LLVM 3 with a vector:
+Method	Duration
+C	8
+C++	8
+Iterator	860
+Assign	1328
+Copy	930
+
+
+Versus for string:
+Method	Duration
+C	7.5
+C++	7.5
+Iterator	110
+Assign	102
+Copy	97
+
+
+With LLVM, everything is slower with a vector, and for the more complex solutions, much much slower. There's two interesting things we can see about LLVM though. For more straight forward logic, their compiler's optimizations are extremely smart. The speeds approach the theoretical best. I did some profiling on GCC and LLVM, as they're using the same C and C++ libraries, and found that in the straight C/C++ methods for my test program, GCC made 300 memory allocations, but LLVM made only 200. LLVM apparently is smart enough to see inside the various allocations, skip the ones that aren't needed, and place the data directly into the output buffer. But for complex code, LLVM's optimizations aren't that great. In the case of vectors and iterators, downright awful. Someone should file some bug reports with them.
+
+Now for Visual C++ 2010 using vector:
+Method	Duration
+C	17.8
+C++	18.7
+Iterator	180.6
+Assign	159.5
+Copy	165.6
+
+
+And string:
+Method	Duration
+C	16.5
+C++	20.4
+Iterator	224.4	
+Assign	222.8
+Copy	320
+
+
+We see here that the Copy method, which uses push_back() got a huge performance improvement. This seems to indicate that the STL implementation adds a 0 at the end of each operation, especially push_back(), instead of just when c_str() is called. Otherwise, string is faster.
+
+It's also sad to see that GCC while winning all the cases where iterators were involved, was significantly slower in all the straight forward cases. This seems to indicate that GCC has the smartest optimizations, but fails to optimize well when the logic is straightforward. Someone should look into that.
+
+It seems if you're trying to hold a collection of bytes, or whatever your wchar_t is, but don't care about the specialties of any particular container, as long as you don't push_back() a lot, string seems to be faster.
+
+Finally, here's a table of all the compilers and methods I tested ordered by speed:
+
+
+Method	Duration
+POSIX	5
+LLVM 3.0 s C/C++	7.5
+LLVM 3.0 v C/C++	8
+MMAP	9
+VC 2010 s C	16.5
+VC 2010 v C	17.8
+VC 2005 s C	18.3
+VC 2010 v C++	19.7
+VC 2010 s C++	20.4
+VC 2005 s C++	21
+GCC 4.6 v C++	22.8
+GCC 4.6 v C	23.5
+VC 2005 v C	24
+GCC 4.6 s C/C++	24.5
+VC 2005 v C++	26
+LLVM 3.0 s Rdbuf	31.5
+GCC 4.6 s Rdbuf	32.5
+GCC 4.6 s Copy	63
+GCC 4.6 s Iterator	64.5
+GCC 4.6 s Assign	68
+GCC 4.6 v Copy	68
+GCC 4.6 v Iterator	73
+GCC 4.6 v Assign	81.8
+LLVM 3.0 s Copy	97
+LLVM 3.0 s Assign	102
+LLVM 3.0 s Iterator	110
+VC 2010 v Assign	159.5
+VC 2010 v Copy	165.6
+VC 2005 v Copy	172
+VC 2010 s Rdbuf	176.2
+VC 2010 v Iterator	180.6
+VC 2005 s Rdbuf	199
+VC 2005 s Iterator	209.3
+VC 2005 s Assign	221
+VC 2010 s Assign	222.8
+VC 2010 s Iterator	224.4
+VC 2010 s Copy	320
+VC 2005 v Iterator	370
+VC 2005 v Assign	378
+VC 2005 s Copy	483.5
+LLVM 3.0 v Iterator	860
+LLVM 3.0 v Copy	930
+LLVM 3.0 v Assign	1328
+
+
